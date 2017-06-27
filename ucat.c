@@ -61,6 +61,11 @@ int buf_len = 0;
 unsigned char *buf, *p;
 int eof_flag, quit_flag, exit_code;
 
+// allow ucat to select a log filename and LEDBAT target value
+int target;
+extern char logfilename[1000];
+
+
 void die(char *fmt, ...)
 {
 	va_list ap;
@@ -334,6 +339,9 @@ void setup(void)
 	utp_set_callback(ctx, UTP_ON_FIREWALL,		&callback_on_firewall);
 	utp_set_callback(ctx, UTP_ON_ACCEPT,		&callback_on_accept);
 
+	/* Set LEDBAT target value */
+	 utp_context_set_option(ctx, UTP_TARGET_DELAY, target);
+
 	if (o_debug >= 2) {
 		utp_context_set_option(ctx, UTP_LOG_NORMAL, 1);
 		utp_context_set_option(ctx, UTP_LOG_MTU,    1);
@@ -560,6 +568,8 @@ void usage(char *name)
 	fprintf(stderr, "    -s <IP>     Source IP\n");
 	fprintf(stderr, "    -B <size>   Buffer size\n");
 	fprintf(stderr, "    -n          Don't resolve hostnames\n");
+	fprintf(stderr, "    -t <target>   Target Delay\n");
+	fprintf(stderr, "    -f <filename>     log file name\n");
 	fprintf(stderr, "\n");
 	exit(1);
 }
@@ -569,9 +579,9 @@ int main(int argc, char *argv[])
 	int i;
 
 	o_local_address = "0.0.0.0";
-
+	target = 100 * 1000;
 	while (1) {
-		int c = getopt (argc, argv, "hdlp:B:s:n");
+		int c = getopt (argc, argv, "hdlp:B:s:nt:f:");
 		if (c == -1) break;
 		switch(c) {
 			case 'h': usage(argv[0]);				break;
@@ -581,6 +591,8 @@ int main(int argc, char *argv[])
 			case 'B': o_buf_size = atoi(optarg);	break;
 			case 's': o_local_address = optarg;		break;
 			case 'n': o_numeric++;					break;
+			case 't': target = atoi(optarg) * 1000; break;
+			case 'f': strcpy(logfilename, optarg);	break;
 			//case 'w': break;	// timeout for connects and final net reads
 			default:
 				die("Unhandled argument: %c\n", c);

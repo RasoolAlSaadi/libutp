@@ -27,11 +27,17 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h> // for UINT_MAX
+#include <time.h>
 
 #include "utp_types.h"
 #include "utp_packedsockaddr.h"
 #include "utp_internal.h"
 #include "utp_hash.h"
+
+// log file
+FILE *fp;
+char logfilename[1000]="";
+int logstate = 0;
 
 #define	TIMEOUT_CHECK_INTERVAL	500
 
@@ -39,7 +45,10 @@
 // scaled down linearly proportional to off_target. i.e. if all packets
 // in one window have 0 delay, window size will increase by this number.
 // Typically it's less. TCP increases one MSS per RTT, which is 1500
-#define MAX_CWND_INCREASE_BYTES_PER_RTT 3000
+
+// 1382 is one utp MSS. Orignal code uses 3000 which causes fast cwnd
+// growth (unfair to TCP)
+#define MAX_CWND_INCREASE_BYTES_PER_RTT 1382 
 #define CUR_DELAY_SIZE 3
 // experiments suggest that a clock skew of 10 ms per 325 seconds
 // is not impossible. Reset delay_base every 13 minutes. The clock
@@ -395,6 +404,8 @@ struct DelayHist {
 
 struct UTPSocket {
 	~UTPSocket();
+        // store the sending time of the latest acked packet 
+        uint64 max_time_sent_acked;
 
 	PackedSockAddr addr;
 	utp_context *ctx;
@@ -590,7 +601,8 @@ struct UTPSocket {
 	// or fail to do one when we really shouldn't.
 	bool can_decay_win(int64 msec) const
 	{
-                return (msec - last_rwin_decay) >= MAX_WINDOW_DECAY;
+                // make the congestion window to decay once per RTT to maintane TCP fairness
+                return (msec - last_rwin_decay) >= rtt; //MAX_WINDOW_DECAY;
 	}
 
 	// If we can, decay max window, returns true if we actually did so
@@ -1350,6 +1362,9 @@ int UTPSocket::ack_packet(uint16 seq)
 
 		return 2;
 	}
+	// update the stored time when a new packet acked 
+        if (pkt->time_sent > max_time_sent_acked)
+                    max_time_sent_acked = pkt->time_sent;
 
 	#if UTP_DEBUG_LOGGING
 	log(UTP_LOG_DEBUG, "got ack for:%u (pkt_size:%u need_resend:%u)",
@@ -1593,14 +1608,29 @@ void UTPSocket::selective_ack(uint base, const byte *mask, byte len)
 		log(UTP_LOG_NORMAL, "Packet %u lost. Resending", v);
 
 		// On Loss
-		back_off = true;
+		//back_off = true;
 
 		#ifdef _DEBUG
 		++_stats.rexmit;
 		#endif
 
-		send_packet(pkt);
-		fast_resend_seq_nr = (v + 1) & ACK_NR_MASK;
+		// ** Fix the retransmission losses problem **
+		// We consider a retransmitted packet lost and resend it if:
+		// (1) a packet sent more than once and
+		// (2) receving dupack asking for the same packet and
+		// (3) we have received ack packet for a packet sent after
+		//     the missing packet i.e. the sending time of missing
+		//     the packet is less than the sending time of the latest
+		//     successfully received packet.
+		if (pkt->transmissions == 1) {
+			this->send_packet(pkt);
+			back_off = true;
+		}
+		else
+			if (max_time_sent_acked >= pkt->time_sent){
+			this->send_packet(pkt);
+		}
+		// *************************************
 
 		// Re-send max 4 packets.
 		if (++i >= 4) break;
@@ -1825,6 +1855,14 @@ size_t utp_process_incoming(UTPSocket *conn, const byte *packet, size_t len, boo
 
 		return 0;
 	}
+
+	// log cwnd and RTT to a file
+	struct timespec ts;
+	if (logstate) {
+		clock_gettime(CLOCK_REALTIME,&ts);
+		fprintf(fp,"%ld.%09ld,%lu,%u\n",ts.tv_sec, ts.tv_nsec, conn->max_window, conn->rtt);
+	}
+
 	// Skip the extension headers
 	uint extension = pf1->ext;
 	if (extension != 0) {
@@ -2571,7 +2609,14 @@ void utp_initialize_socket(	utp_socket *conn,
 	#if UTP_DEBUG_LOGGING
 	conn->log(UTP_LOG_DEBUG, "UTP socket initialized");
 	#endif
+
+ 	// open the cwnd logfile for write
+	if(logfilename[0]!='\0') {
+		fp=fopen(logfilename,"w");
+		logstate = 1;
 }
+}
+
 
 utp_socket*	utp_create_socket(utp_context *ctx)
 {
@@ -2579,6 +2624,7 @@ utp_socket*	utp_create_socket(utp_context *ctx)
 	if (!ctx) return NULL;
 
 	UTPSocket *conn = new UTPSocket; // TODO: UTPSocket should have a constructor
+	conn->max_time_sent_acked	= 0;
 
 	conn->state					= CS_UNINITIALIZED;
 	conn->ctx					= ctx;
