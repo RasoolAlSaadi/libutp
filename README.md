@@ -1,3 +1,32 @@
+# libutp-mod - A modified version of the uTorrent Transport Protocol library.
+
+This modified version of libutp fixes some congestion control (LEDBAT) related
+implementation problems of the original libutp.
+
+## Congestion Control Related Problems of libutp
+
+libutp has problems that cause fairness and performance issues, which are:
+1) Does not backoff cwnd more frequently than once every 100ms regardless of RTT.
+2) MAX_CWND_INCREASE_BYTES_PER_RTT (i.e. G × MSS) is effectively set to
+   3000 bytes, allowing the congestion window growth by roughly two MSS rather
+   than one MSS per RTT (faster than it would with standard TCP).
+3) The fast recovery in libutp is unable to recover from retransmission losses
+   (loss of the retransmitted packets) without relying on the retransmission
+   timeout (RTO). This problem causes sending stalls (for one second) which
+   reduces the throughput significantly in heavy packet-loss scenarios such as
+   in AQM-enabled bottlenecks and wireless networks.
+
+## libutp-mod Fixes
+
+We fixed the issues above by modifying libutp as follows:
+1) Use libutp’s existing smoothed RTT estimate to allow cwnd to backoff once
+   per RTT (per RFC6817) on packet loss.
+2) Modify MAX_CWND_INCREASE_BYTES_PER_RTT to ensure cwnd grows by only one MSS
+   per RTT.
+3) Allow lost retransmissions to themselves be retransmitted long before an RTO
+   is triggered by utilising the selective ACK option and packet transmission time.
+
+
 # libutp - The uTorrent Transport Protocol library.
 Copyright (c) 2010 BitTorrent, Inc.
 
